@@ -22,36 +22,36 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-# Timezone setup: ensure all processes (nginx, gunicorn, Python logging) use
-# the same timezone so log timestamps are always aligned.
+# Timezone setup: align every process in the container to the same timezone
+# so that log timestamps from nginx, gunicorn, and Python all agree.
 #
-# When TZ is set it is the authority: /etc/localtime is updated to match so
-# that C programs such as nginx, which read the file directly, agree with
-# Python (which reads TZ via time.tzset() in gunicorn.conf.py).
+# TZ is the single source of truth.  If not supplied it defaults to Etc/UTC,
+# matching the Dockerfile default.  Exporting TZ before supervisord starts is
+# sufficient: both Python (via time.tzset() in gunicorn.conf.py) and nginx
+# (via the C library's localtime(), which checks TZ before falling back to
+# /etc/localtime) inherit it from their parent process.  The container works
+# correctly in non-root mode for exactly this reason — no file-system write is
+# required for timezone handling to take effect.
 #
-# When TZ is not set it is derived from the environment in priority order:
-#   1. /etc/localtime symlink target  (common Docker host-timezone pattern)
-#   2. /etc/timezone                  (plain-file bind-mount fallback)
-# The derived name is exported as TZ so Python and nginx both pick it up.
-if [ -n "${TZ}" ]; then
-   if [ -f "/usr/share/zoneinfo/${TZ}" ]; then
-      echo "${TZ}" > /etc/timezone 2>/dev/null || true
-      echo "Timezone: ${TZ}"
-   else
-      echo "WARNING: TZ='${TZ}' is not a valid timezone name; timestamps may be inaccurate"
-   fi
-elif [ -L /etc/localtime ]; then
-   _tz=$(readlink /etc/localtime | sed 's|.*/zoneinfo/||')
-   if [ -n "${_tz}" ] && [ -f "/usr/share/zoneinfo/${_tz}" ]; then
-      export TZ="${_tz}"
-      echo "Timezone derived from /etc/localtime symlink: ${TZ}"
-   fi
-elif [ -f /etc/timezone ]; then
-   _tz=$(cat /etc/timezone 2>/dev/null | tr -d '[:space:]')
-   if [ -n "${_tz}" ] && [ -f "/usr/share/zoneinfo/${_tz}" ]; then
-      export TZ="${_tz}"
-      echo "Timezone derived from /etc/timezone: ${TZ}"
-   fi
+# Note: users who previously relied on bind-mounting the host's /etc/localtime
+# or /etc/timezone to propagate the host timezone without setting TZ should now
+# pass TZ explicitly (e.g. -e TZ=America/New_York) to guarantee consistent
+# behaviour across all processes.
+#
+# /etc/localtime and /etc/timezone are also updated as a secondary best-effort
+# measure so that any tool that reads those files directly (bypassing the C
+# library's localtime()) also sees the correct zone.  Both writes are silently
+# skipped when the container runs as a non-root user; this has no effect on
+# nginx or Python, which read TZ from the environment.
+TZ="${TZ:-Etc/UTC}"
+export TZ
+
+if [ -f "/usr/share/zoneinfo/${TZ}" ]; then
+   ln -sf "/usr/share/zoneinfo/${TZ}" /etc/localtime 2>/dev/null || true
+   printf '%s\n' "${TZ}" > /etc/timezone 2>/dev/null || true
+   echo "Timezone: ${TZ}"
+else
+   echo "WARNING: TZ='${TZ}' not found in /usr/share/zoneinfo/; timestamps may be inaccurate"
 fi
 
 # Nginx configuration file
